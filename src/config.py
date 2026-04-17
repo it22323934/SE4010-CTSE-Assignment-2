@@ -21,14 +21,34 @@ REPORTS_DIR.mkdir(exist_ok=True)
 LOGS_DIR.mkdir(exist_ok=True)
 CLONED_REPOS_DIR.mkdir(exist_ok=True)
 
-# --- Ollama Model Mapping ---
-# Each agent uses a specific model as per assignment requirements
-MODELS: dict[str, str] = {
-    "orchestrator": "llama3:8b",
-    "code_quality": "deepseek-coder-v2:16b",
-    "security": "llama3:8b",
-    "refactoring": "deepseek-coder-v2:16b",
+# --- Model Presets ---
+# Switch between presets by changing ACTIVE_MODEL_PRESET
+MODEL_PRESETS: dict[str, dict[str, str]] = {
+    "fast": {
+        "orchestrator": "llama3:8b",
+        "code_quality": "qwen2.5-coder:7b",
+        "security": "llama3:8b",
+        "refactoring": "qwen2.5-coder:7b",
+    },
+    "balanced": {
+        "orchestrator": "llama3:8b",
+        "code_quality": "qwen2.5-coder:14b",
+        "security": "llama3:8b",
+        "refactoring": "qwen2.5-coder:14b",
+    },
+    "heavy": {
+        "orchestrator": "llama3:8b",
+        "code_quality": "deepseek-coder-v2:16b",
+        "security": "llama3:8b",
+        "refactoring": "deepseek-coder-v2:16b",
+    },
 }
+
+ACTIVE_MODEL_PRESET = "fast"
+
+# --- Ollama Model Mapping ---
+# Resolved from the active preset — agents import MODELS["agent_name"]
+MODELS: dict[str, str] = MODEL_PRESETS[ACTIVE_MODEL_PRESET]
 
 # --- LLM Settings ---
 LLM_SETTINGS: dict[str, dict] = {

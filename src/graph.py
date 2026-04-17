@@ -46,16 +46,14 @@ def build_graph() -> StateGraph:
         "orchestrator_plan",
         route_after_planning,
         {
-            "run_both": "code_quality",
+            "run_both": ["code_quality", "security"],
             "skip_quality": "security",
             "skip_security": "code_quality",
         },
     )
 
-    # Code Quality → Security (sequential for simplicity)
-    workflow.add_edge("code_quality", "security")
-
-    # Security → Merge
+    # Both agents converge to merge (parallel fan-in)
+    workflow.add_edge("code_quality", "merge_findings")
     workflow.add_edge("security", "merge_findings")
 
     # Merge → Refactoring

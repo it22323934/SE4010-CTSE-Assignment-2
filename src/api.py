@@ -54,6 +54,7 @@ class AuditRequest(BaseModel):
     repo_path: str | None = Field(default=None, description="Absolute path to a local Git repository")
     repo_url: str | None = Field(default=None, description="Remote Git URL to clone and audit")
     branch: str | None = Field(default=None, description="Branch to checkout when cloning")
+    force_reclone: bool = Field(default=False, description="Force re-pull from remote before auditing")
 
 
 class AuditStatusResponse(BaseModel):
@@ -96,6 +97,7 @@ async def start_audit(request: AuditRequest) -> dict:
         result = json.loads(clone_repository.invoke({
             "repo_url": request.repo_url,
             "branch": request.branch,
+            "force_reclone": request.force_reclone,
         }))
         if result["status"] != "success":
             raise HTTPException(status_code=400, detail=f"Clone failed: {result.get('error', 'Unknown')}")
@@ -450,3 +452,26 @@ async def health_check() -> dict:
         "version": "1.0.0",
         "database": str(DB_PATH),
     }
+
+
+@app.get("/api/config/models")
+async def get_model_config() -> dict:
+    """Return the current model configuration and available presets."""
+    from src.config import MODELS, MODEL_PRESETS, ACTIVE_MODEL_PRESET
+    return {
+        "active_preset": ACTIVE_MODEL_PRESET,
+        "models": MODELS,
+        "presets": MODEL_PRESETS,
+    }
+
+
+@app.put("/api/config/models/{preset_name}")
+async def set_model_preset(preset_name: str) -> dict:
+    """Switch the active model preset."""
+    import src.config as cfg
+    if preset_name not in cfg.MODEL_PRESETS:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=400, detail=f"Unknown preset: {preset_name}. Available: {list(cfg.MODEL_PRESETS.keys())}")
+    cfg.ACTIVE_MODEL_PRESET = preset_name
+    cfg.MODELS = cfg.MODEL_PRESETS[preset_name]
+    return {"active_preset": preset_name, "models": cfg.MODELS}
