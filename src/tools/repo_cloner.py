@@ -120,7 +120,7 @@ def clone_repository(repo_url: str, branch: str | None = None, force_reclone: bo
                 """Handle read-only files (e.g. .git/objects/pack on Windows)."""
                 os.chmod(path, stat.S_IWRITE)
                 os.unlink(path)
-            shutil.rmtree(clone_path, onerror=_on_rm_error)
+            shutil.rmtree(clone_path, onexc=_on_rm_error)
 
         if clone_path.exists() and (clone_path / ".git").exists():
             # Repository already cloned — pull latest changes
