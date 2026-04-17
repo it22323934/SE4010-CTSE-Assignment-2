@@ -4,7 +4,6 @@ import { useState, useEffect, useRef, useCallback } from "react";
 const API_BASE = "/api";
 
 async function startAudit(repoPath) {
-  // Detect if input is a URL or local path
   const isUrl = /^https?:\/\/|^git@/.test(repoPath.trim());
   const body = isUrl
     ? { repo_url: repoPath.trim() }
@@ -26,6 +25,27 @@ async function pollAuditStatus(auditId) {
   const res = await fetch(`${API_BASE}/audit/${auditId}/status`);
   if (!res.ok) throw new Error("Failed to fetch status");
   return res.json();
+}
+
+async function downloadReport(auditId) {
+  const res = await fetch(`${API_BASE}/audit/${auditId}/report`);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: "Download failed" }));
+    throw new Error(err.detail || "Download failed");
+  }
+  const blob = await res.blob();
+  const url = window.URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  const disposition = res.headers.get("content-disposition");
+  const filename = disposition
+    ? disposition.split("filename=")[1]?.replace(/"/g, "") || "audit-report.md"
+    : "audit-report.md";
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  window.URL.revokeObjectURL(url);
 }
 
 // --- GitHub Dark Theme Tokens ---
@@ -152,45 +172,74 @@ const SeverityBadge = ({ severity }) => {
   );
 };
 
-// --- Workflow Step Component ---
-const WorkflowStep = ({ step, status, duration, isLast, logs, isExpanded, onToggle }) => {
+// --- Workflow Step Component (GitHub Actions-style) ---
+const WorkflowStep = ({ step, status, duration, isLast, logs, isExpanded, onToggle, findingsCount, toolCalls }) => {
   const Icon = Icons[step.icon] || Icons.Gear;
   const borderColor = status === "completed" ? gh.green : status === "running" ? gh.yellow : status === "failed" ? gh.red : gh.border;
+  const connectorColor = status === "completed" ? `${gh.green}50` : gh.border;
+
+  const formatDuration = (ms) => {
+    if (!ms) return null;
+    if (ms < 1000) return `${ms}ms`;
+    const s = (ms / 1000).toFixed(1);
+    return `${s}s`;
+  };
 
   return (
     <div style={{ position: "relative" }}>
+      {/* Vertical connector line */}
       {!isLast && (
-        <div style={{ position: "absolute", left: 19, top: 40, bottom: 0, width: 2, background: status === "completed" ? `${gh.green}50` : gh.border, zIndex: 0 }} />
+        <div style={{ position: "absolute", left: 19, top: 40, bottom: 0, width: 2, background: connectorColor, zIndex: 0 }} />
       )}
       <div onClick={onToggle} style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 16px", cursor: "pointer", borderRadius: 6, background: status === "running" ? `${gh.yellow}08` : "transparent", transition: "background 0.15s ease", position: "relative", zIndex: 1 }}
         onMouseEnter={(e) => { if (status !== "running") e.currentTarget.style.background = gh.bgSubtle; }}
         onMouseLeave={(e) => { if (status !== "running") e.currentTarget.style.background = status === "running" ? `${gh.yellow}08` : "transparent"; }}>
+        {/* Node circle */}
         <div style={{ width: 40, height: 40, borderRadius: "50%", border: `2px solid ${borderColor}`, display: "flex", alignItems: "center", justifyContent: "center", background: gh.bgOverlay, flexShrink: 0 }}>
           {status === "running" ? <Spinner size={18} /> : status === "completed" ? <span style={{ color: gh.green }}><Icons.Check /></span> : status === "failed" ? <span style={{ color: gh.red }}><Icons.X /></span> : <span style={{ color: gh.textSubtle }}><Icon /></span>}
         </div>
         <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
             <span style={{ fontSize: 14, fontWeight: 600, color: gh.text }}>{step.label}</span>
             <span style={{ fontSize: 11, fontFamily: "'SF Mono', 'Cascadia Code', monospace", color: gh.textSubtle, background: gh.bgSubtle, padding: "1px 6px", borderRadius: 4 }}>{step.model}</span>
+            {findingsCount > 0 && status === "completed" && (
+              <span style={{ fontSize: 11, fontFamily: "'SF Mono', 'Cascadia Code', monospace", color: gh.orange, background: gh.yellowBg, padding: "1px 6px", borderRadius: 4, border: `1px solid ${gh.orange}30` }}>
+                {findingsCount} finding{findingsCount !== 1 ? "s" : ""}
+              </span>
+            )}
           </div>
           <span style={{ fontSize: 12, color: gh.textMuted, marginTop: 2, display: "block" }}>{step.description}</span>
+          {/* Tool calls badges when running or completed */}
+          {toolCalls && toolCalls.length > 0 && (
+            <div style={{ display: "flex", gap: 4, marginTop: 4, flexWrap: "wrap" }}>
+              {[...new Set(toolCalls)].map((tool, i) => (
+                <span key={i} style={{ fontSize: 10, fontFamily: "'SF Mono', 'Cascadia Code', monospace", color: gh.blue, background: gh.blueBg, padding: "1px 5px", borderRadius: 3, border: `1px solid ${gh.blue}30` }}>
+                  {tool}
+                </span>
+              ))}
+            </div>
+          )}
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
           {duration && (
             <span style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12, color: gh.textMuted, fontFamily: "'SF Mono', 'Cascadia Code', monospace" }}>
-              <Icons.Clock /> {duration}
+              <Icons.Clock /> {formatDuration(duration)}
             </span>
           )}
-          {(status === "completed" || status === "failed") && <span style={{ color: gh.textSubtle }}><Icons.Chevron open={isExpanded} /></span>}
+          {status === "running" && (
+            <span style={{ fontSize: 11, color: gh.yellow, fontWeight: 500 }}>In Progress</span>
+          )}
+          {(logs && logs.length > 0) && <span style={{ color: gh.textSubtle }}><Icons.Chevron open={isExpanded} /></span>}
         </div>
       </div>
 
-      {isExpanded && logs && (
+      {/* Expanded execution log */}
+      {isExpanded && logs && logs.length > 0 && (
         <div style={{ marginLeft: 56, marginTop: 4, marginBottom: 12, background: gh.bgInset, border: `1px solid ${gh.border}`, borderRadius: 6, overflow: "hidden" }}>
           <div style={{ padding: "8px 12px", borderBottom: `1px solid ${gh.border}`, display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: gh.textMuted }}>
-            <Icons.File /> Agent Execution Log
+            <Icons.File /> Agent Execution Log — {logs.length} entries
           </div>
-          <div style={{ padding: "8px 0", fontFamily: "'SF Mono', 'Cascadia Code', 'Fira Code', monospace", fontSize: 12, lineHeight: "22px", maxHeight: 220, overflowY: "auto" }}>
+          <div style={{ padding: "8px 0", fontFamily: "'SF Mono', 'Cascadia Code', 'Fira Code', monospace", fontSize: 12, lineHeight: "22px", maxHeight: 300, overflowY: "auto" }}>
             {logs.map((line, i) => {
               let color = gh.textMuted;
               if (line.startsWith("[tool]")) color = gh.blue;
@@ -198,11 +247,12 @@ const WorkflowStep = ({ step, status, duration, isLast, logs, isExpanded, onTogg
               else if (line.startsWith("[state]")) color = gh.green;
               else if (line.startsWith("[plan]")) color = gh.yellow;
               else if (line.startsWith("[merge]")) color = gh.orange;
+              else if (line.startsWith("[error]")) color = gh.red;
               else if (line.startsWith("[read]")) color = gh.textMuted;
               return (
-                <div key={i} style={{ padding: "0 16px", display: "flex", gap: 8, whiteSpace: "nowrap" }}>
+                <div key={i} style={{ padding: "0 16px", display: "flex", gap: 8 }}>
                   <span style={{ color: gh.textSubtle, userSelect: "none", width: 20, textAlign: "right", flexShrink: 0 }}>{i + 1}</span>
-                  <span style={{ color, overflow: "hidden", textOverflow: "ellipsis" }}>{line}</span>
+                  <span style={{ color, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{line}</span>
                 </div>
               );
             })}
@@ -279,37 +329,51 @@ export default function CodeSentinelUI() {
   const [repoPath, setRepoPath] = useState("");
   const [isRunning, setIsRunning] = useState(false);
   const [isComplete, setIsComplete] = useState(false);
-  const [currentStep, setCurrentStep] = useState(-1);
   const [stepStatuses, setStepStatuses] = useState({});
   const [stepDurations, setStepDurations] = useState({});
+  const [stepFindingsCounts, setStepFindingsCounts] = useState({});
+  const [stepToolCalls, setStepToolCalls] = useState({});
   const [expandedStep, setExpandedStep] = useState(null);
   const [activeTab, setActiveTab] = useState("workflow");
   const [stepLogs, setStepLogs] = useState({});
   const [auditId, setAuditId] = useState(null);
   const [findings, setFindings] = useState({ code_quality: [], security: [], refactoring: [] });
   const [errorMsg, setErrorMsg] = useState(null);
-  const timerRef = useRef(null);
+  const [elapsedTime, setElapsedTime] = useState(0);
   const pollRef = useRef(null);
+  const timerRef = useRef(null);
 
-  // Convert agent traces to displayable log lines
-  const tracesToLogs = useCallback((traces) => {
-    const logs = {};
-    for (const trace of (traces || [])) {
-      const agent = trace.agent || "unknown";
-      const stepId = agent === "orchestrator" ? "orchestrator_plan" :
-                     agent === "orchestrator_merge" ? "merge_findings" : agent;
-      if (!logs[stepId]) logs[stepId] = [];
-      for (const tc of (trace.tool_calls || [])) {
-        logs[stepId].push(`[tool] ${tc.tool} → ${JSON.stringify(tc.params).slice(0, 80)}`);
-      }
-      if (trace.output_summary) {
-        logs[stepId].push(`[state] ${trace.output_summary}`);
-      }
-      if (trace.error) {
-        logs[stepId].push(`[error] ${trace.error}`);
+  // Process steps data from backend status response
+  const processStepsData = useCallback((steps, currentStep) => {
+    const statuses = {};
+    const durations = {};
+    const findingsCounts = {};
+    const toolCallsMap = {};
+    const logsMap = {};
+
+    for (const [stepId, stepData] of Object.entries(steps || {})) {
+      if (typeof stepData === "string") {
+        // Legacy format: just a status string
+        statuses[stepId] = stepData;
+      } else if (typeof stepData === "object" && stepData !== null) {
+        statuses[stepId] = stepData.status || "pending";
+        durations[stepId] = stepData.duration_ms || null;
+        findingsCounts[stepId] = stepData.findings_count || 0;
+        toolCallsMap[stepId] = stepData.tool_calls || [];
+        logsMap[stepId] = stepData.logs || [];
       }
     }
-    return logs;
+
+    // Ensure current step shows as running if backend says so
+    if (currentStep && !statuses[currentStep]) {
+      statuses[currentStep] = "running";
+    }
+
+    setStepStatuses(statuses);
+    setStepDurations(durations);
+    setStepFindingsCounts(findingsCounts);
+    setStepToolCalls(toolCallsMap);
+    setStepLogs(logsMap);
   }, []);
 
   const runAudit = useCallback(async () => {
@@ -317,55 +381,77 @@ export default function CodeSentinelUI() {
 
     setIsRunning(true);
     setIsComplete(false);
-    setCurrentStep(0);
     setStepStatuses({});
     setStepDurations({});
+    setStepFindingsCounts({});
+    setStepToolCalls({});
     setExpandedStep(null);
     setStepLogs({});
     setActiveTab("workflow");
     setFindings({ code_quality: [], security: [], refactoring: [] });
     setErrorMsg(null);
+    setElapsedTime(0);
+
+    // Start elapsed timer
+    const startTs = Date.now();
+    timerRef.current = setInterval(() => {
+      setElapsedTime(Math.floor((Date.now() - startTs) / 1000));
+    }, 1000);
 
     try {
-      // Start the audit via API
       const result = await startAudit(repoPath);
       const id = result.audit_id;
       setAuditId(id);
 
-      // Simulate step progression while polling
-      let stepIdx = 0;
-      const stepIds = WORKFLOW_STEPS.map(s => s.id);
-
-      const stepInterval = setInterval(() => {
-        if (stepIdx < stepIds.length) {
-          setStepStatuses(prev => {
-            const updated = { ...prev };
-            // Complete previous step
-            if (stepIdx > 0) updated[stepIds[stepIdx - 1]] = "completed";
-            // Set current as running
-            updated[stepIds[stepIdx]] = "running";
-            return updated;
-          });
-          setCurrentStep(stepIdx);
-          stepIdx++;
-        }
-      }, 3000);
-
-      // Poll for completion
+      // Poll for real-time step progress from backend
       pollRef.current = setInterval(async () => {
         try {
           const status = await pollAuditStatus(id);
 
+          // Update step progress from backend data
+          processStepsData(status.steps, status.current_step);
+
           if (status.status === "completed") {
-            clearInterval(stepInterval);
             clearInterval(pollRef.current);
+            clearInterval(timerRef.current);
 
-            // Mark all steps as completed
-            const allCompleted = {};
-            stepIds.forEach(s => { allCompleted[s] = "completed"; });
-            setStepStatuses(allCompleted);
+            // Process final step data
+            processStepsData(status.steps, null);
 
-            // Set findings from API response
+            // Build detailed logs from agent_traces if available
+            if (status.agent_traces && status.agent_traces.length > 0) {
+              const traceLogs = {};
+              for (const trace of status.agent_traces) {
+                const agent = trace.agent || "unknown";
+                const stepId = agent === "orchestrator" ? "orchestrator_plan"
+                  : agent === "orchestrator_merge" ? "merge_findings" : agent;
+                if (!traceLogs[stepId]) traceLogs[stepId] = [];
+                for (const tc of (trace.tool_calls || [])) {
+                  traceLogs[stepId].push(`[tool] ${tc.tool} → ${JSON.stringify(tc.params).slice(0, 100)}`);
+                }
+                if (trace.input_summary) {
+                  traceLogs[stepId].push(`[plan] ${trace.input_summary}`);
+                }
+                if (trace.output_summary) {
+                  traceLogs[stepId].push(`[state] ${trace.output_summary}`);
+                }
+                if (trace.duration_ms) {
+                  traceLogs[stepId].push(`[state] Completed in ${trace.duration_ms}ms`);
+                }
+                if (trace.error) {
+                  traceLogs[stepId].push(`[error] ${trace.error}`);
+                }
+              }
+              // Merge trace logs with step logs (step logs take priority)
+              setStepLogs(prev => {
+                const merged = { ...traceLogs };
+                for (const [k, v] of Object.entries(prev)) {
+                  if (v && v.length > 0) merged[k] = v;
+                }
+                return merged;
+              });
+            }
+
             if (status.findings) {
               setFindings({
                 code_quality: status.findings.code_quality || [],
@@ -374,37 +460,42 @@ export default function CodeSentinelUI() {
               });
             }
 
-            // Build logs from agent traces
-            if (status.findings && status.findings.merged) {
-              // We have trace data from the result
-            }
-
             setIsRunning(false);
             setIsComplete(true);
           } else if (status.status === "failed") {
-            clearInterval(stepInterval);
             clearInterval(pollRef.current);
+            clearInterval(timerRef.current);
             setIsRunning(false);
             setErrorMsg(status.error || "Audit failed");
 
+            // Mark remaining pending steps as failed
+            const stepIds = WORKFLOW_STEPS.map(s => s.id);
             const failedStatuses = {};
-            stepIds.forEach(s => { failedStatuses[s] = "failed"; });
+            stepIds.forEach(s => {
+              const current = status.steps?.[s];
+              if (current && typeof current === "object") {
+                failedStatuses[s] = current.status === "completed" ? "completed" : "failed";
+              } else {
+                failedStatuses[s] = "failed";
+              }
+            });
             setStepStatuses(failedStatuses);
           }
-        } catch (pollErr) {
+        } catch (_pollErr) {
           // Keep polling on transient errors
         }
-      }, 2000);
+      }, 1500);
 
     } catch (err) {
+      clearInterval(timerRef.current);
       setIsRunning(false);
       setErrorMsg(err.message);
     }
-  }, [isRunning, repoPath, tracesToLogs]);
+  }, [isRunning, repoPath, processStepsData]);
 
   useEffect(() => {
     return () => {
-      if (timerRef.current) clearTimeout(timerRef.current);
+      if (timerRef.current) clearInterval(timerRef.current);
       if (pollRef.current) clearInterval(pollRef.current);
     };
   }, []);
@@ -413,6 +504,12 @@ export default function CodeSentinelUI() {
   const totalFindings = allFindings.length;
   const criticalCount = allFindings.filter(f => f.severity === "critical").length;
   const highCount = allFindings.filter(f => f.severity === "high").length;
+
+  const formatElapsed = (s) => {
+    const m = Math.floor(s / 60);
+    const sec = s % 60;
+    return m > 0 ? `${m}m ${sec}s` : `${sec}s`;
+  };
 
   return (
     <div style={{ fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif", background: gh.bg, color: gh.text, minHeight: "100vh", padding: 0 }}>
@@ -439,7 +536,7 @@ export default function CodeSentinelUI() {
         )}
         {isRunning && (
           <span style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: gh.yellow, animation: "ghPulse 2s ease-in-out infinite" }}>
-            <Spinner size={14} /> Running...
+            <Spinner size={14} /> Running · {formatElapsed(elapsedTime)}
           </span>
         )}
       </div>
@@ -462,6 +559,7 @@ export default function CodeSentinelUI() {
           </div>
           <div style={{ display: "flex", gap: 8 }}>
             <input type="text" placeholder="https://github.com/owner/repo  or  /path/to/local/repo" value={repoPath} onChange={e => setRepoPath(e.target.value)}
+              onKeyDown={e => { if (e.key === "Enter") runAudit(); }}
               style={{ flex: 1, padding: "6px 12px", fontSize: 13, fontFamily: "'SF Mono', 'Cascadia Code', monospace", background: gh.bgInset, color: gh.text, border: `1px solid ${gh.border}`, borderRadius: 6, transition: "border-color 0.15s, box-shadow 0.15s" }} />
             <button onClick={runAudit} disabled={isRunning || !repoPath.trim()}
               style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 16px", fontSize: 13, fontWeight: 600, color: "#fff", background: isRunning ? gh.btnSecondary : gh.btnPrimary, border: `1px solid ${isRunning ? gh.border : "rgba(240,246,252,0.1)"}`, borderRadius: 6, cursor: isRunning ? "not-allowed" : "pointer", transition: "background 0.15s", opacity: isRunning ? 0.6 : 1 }}
@@ -472,7 +570,7 @@ export default function CodeSentinelUI() {
           </div>
         </div>
 
-        {/* Summary Cards */}
+        {/* Summary Cards + Download */}
         {isComplete && (
           <div style={{ display: "flex", gap: 12, marginBottom: 20, flexWrap: "wrap" }}>
             <SummaryCard label="Total Findings" value={totalFindings} color={gh.blue} icon={Icons.Alert} />
@@ -485,11 +583,21 @@ export default function CodeSentinelUI() {
         {/* Tabs */}
         {(isRunning || isComplete) && (
           <>
-            <div style={{ borderBottom: `1px solid ${gh.border}`, marginBottom: 20, display: "flex", gap: 0 }}>
+            <div style={{ borderBottom: `1px solid ${gh.border}`, marginBottom: 20, display: "flex", gap: 0, alignItems: "center" }}>
               <TabBtn label="Workflow" active={activeTab === "workflow"} onClick={() => setActiveTab("workflow")} />
               {isComplete && <TabBtn label="Code Quality" active={activeTab === "quality"} onClick={() => setActiveTab("quality")} />}
               {isComplete && <TabBtn label="Security" active={activeTab === "security"} onClick={() => setActiveTab("security")} />}
               {isComplete && <TabBtn label="Refactoring Plan" active={activeTab === "refactoring"} onClick={() => setActiveTab("refactoring")} />}
+              {isComplete && auditId && (
+                <div style={{ marginLeft: "auto" }}>
+                  <button onClick={() => downloadReport(auditId)}
+                    style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 12px", fontSize: 12, fontWeight: 500, color: gh.text, background: gh.btnSecondary, border: `1px solid ${gh.border}`, borderRadius: 6, cursor: "pointer", transition: "background 0.15s" }}
+                    onMouseEnter={e => e.currentTarget.style.background = gh.btnSecondaryHover}
+                    onMouseLeave={e => e.currentTarget.style.background = gh.btnSecondary}>
+                    <Icons.File /> Download Report
+                  </button>
+                </div>
+              )}
             </div>
 
             {/* Workflow Tab */}
@@ -499,10 +607,17 @@ export default function CodeSentinelUI() {
                   <span style={{ fontSize: 14, fontWeight: 600 }}>Audit Pipeline</span>
                   <span style={{ fontSize: 12, color: gh.textMuted }}>·</span>
                   <span style={{ fontSize: 12, color: gh.textMuted }}>{Object.values(stepStatuses).filter(s => s === "completed").length}/{WORKFLOW_STEPS.length} steps</span>
+                  {isRunning && <span style={{ fontSize: 12, color: gh.yellow, marginLeft: 8 }}>{formatElapsed(elapsedTime)}</span>}
                 </div>
                 {WORKFLOW_STEPS.map((step, i) => (
-                  <WorkflowStep key={step.id} step={step} status={stepStatuses[step.id] || "pending"} duration={stepDurations[step.id]}
-                    isLast={i === WORKFLOW_STEPS.length - 1} logs={stepLogs[step.id]} isExpanded={expandedStep === step.id}
+                  <WorkflowStep key={step.id} step={step}
+                    status={stepStatuses[step.id] || "pending"}
+                    duration={stepDurations[step.id]}
+                    findingsCount={stepFindingsCounts[step.id]}
+                    toolCalls={stepToolCalls[step.id]}
+                    isLast={i === WORKFLOW_STEPS.length - 1}
+                    logs={stepLogs[step.id]}
+                    isExpanded={expandedStep === step.id}
                     onToggle={() => setExpandedStep(expandedStep === step.id ? null : step.id)} />
                 ))}
               </div>

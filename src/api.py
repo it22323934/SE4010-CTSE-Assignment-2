@@ -5,6 +5,7 @@ Provides REST API endpoints for:
 - Streaming pipeline progress via SSE
 - Querying findings and reports
 - Historical audit comparisons
+- Report download
 """
 
 import asyncio
@@ -16,7 +17,7 @@ from typing import Any
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from src.config import DB_PATH, REPORTS_DIR
@@ -130,7 +131,11 @@ async def start_audit(request: AuditRequest) -> dict:
 
 
 async def _run_audit_async(audit_id: str, repo_path: str) -> None:
-    """Run the audit pipeline asynchronously.
+    """Run the audit pipeline asynchronously with real-time step tracking.
+
+    Uses graph.stream() to capture per-node outputs as they complete,
+    updating the audit tracking dict so the status endpoint returns
+    live progress data.
 
     Args:
         audit_id: Unique audit identifier.
@@ -152,12 +157,93 @@ async def _run_audit_async(audit_id: str, repo_path: str) -> None:
             "errors": [],
         }
 
-        # Step tracking
         step_names = ["orchestrator_plan", "code_quality", "security", "merge_findings", "refactoring"]
 
-        # Run the graph
+        # Initialize step tracking with timestamps
+        for step in step_names:
+            audit["steps"][step] = {
+                "status": "pending",
+                "started_at": None,
+                "completed_at": None,
+                "duration_ms": None,
+                "findings_count": 0,
+                "tool_calls": [],
+                "logs": [],
+            }
+
         audit["status"] = "running"
-        result = await asyncio.to_thread(graph.invoke, initial_state)
+
+        # Use stream() to capture per-node outputs in real time
+        def _run_stream():
+            """Run graph.stream() and update audit dict per step."""
+            accumulated_state = dict(initial_state)
+
+            for node_output in graph.stream(initial_state):
+                for node_name, node_data in node_output.items():
+                    now = datetime.now().isoformat()
+
+                    # Mark this step as completed
+                    if node_name in audit["steps"]:
+                        step_info = audit["steps"][node_name]
+                        step_info["status"] = "completed"
+                        step_info["completed_at"] = now
+
+                        # Calculate duration if we have started_at
+                        if step_info["started_at"]:
+                            try:
+                                start = datetime.fromisoformat(step_info["started_at"])
+                                end = datetime.fromisoformat(now)
+                                step_info["duration_ms"] = int((end - start).total_seconds() * 1000)
+                            except (ValueError, TypeError):
+                                pass
+
+                        # Extract logs from agent traces
+                        traces = node_data.get("agent_traces", [])
+                        for trace in traces:
+                            step_info["duration_ms"] = trace.get("duration_ms", step_info.get("duration_ms"))
+                            for tc in trace.get("tool_calls", []):
+                                step_info["tool_calls"].append(tc.get("tool", "unknown"))
+                                step_info["logs"].append(
+                                    f"[tool] {tc.get('tool', '')} → {json.dumps(tc.get('params', {}))[:80]}"
+                                )
+                            if trace.get("output_summary"):
+                                step_info["logs"].append(f"[state] {trace['output_summary']}")
+                            if trace.get("error"):
+                                step_info["logs"].append(f"[error] {trace['error']}")
+
+                        # Count findings produced by this step
+                        cq = node_data.get("code_quality_findings", [])
+                        sec = node_data.get("security_findings", [])
+                        merged = node_data.get("merged_findings", [])
+                        refactoring = node_data.get("refactoring_plan", [])
+                        step_info["findings_count"] = len(cq) + len(sec) + len(merged) + len(refactoring)
+
+                    # Mark the NEXT step as running
+                    if node_name in step_names:
+                        idx = step_names.index(node_name)
+                        if idx + 1 < len(step_names):
+                            next_step = step_names[idx + 1]
+                            audit["steps"][next_step]["status"] = "running"
+                            audit["steps"][next_step]["started_at"] = now
+                            audit["current_step"] = next_step
+                        else:
+                            audit["current_step"] = None
+
+                    # Accumulate state
+                    for key, value in node_data.items():
+                        if isinstance(value, list) and isinstance(accumulated_state.get(key), list):
+                            accumulated_state[key] = accumulated_state[key] + value
+                        else:
+                            accumulated_state[key] = value
+
+            return accumulated_state
+
+        # Mark first step as running
+        audit["steps"]["orchestrator_plan"]["status"] = "running"
+        audit["steps"]["orchestrator_plan"]["started_at"] = datetime.now().isoformat()
+        audit["current_step"] = "orchestrator_plan"
+
+        result = await asyncio.to_thread(_run_stream)
 
         audit["status"] = "completed"
         audit["result"] = {
@@ -170,10 +256,6 @@ async def _run_audit_async(audit_id: str, repo_path: str) -> None:
             "errors": result.get("errors", []),
             "agent_traces": result.get("agent_traces", []),
         }
-
-        # Mark all steps as completed
-        for step in step_names:
-            audit["steps"][step] = "completed"
         audit["current_step"] = None
 
         tracer.save()
@@ -217,6 +299,7 @@ async def get_audit_status(audit_id: str) -> dict:
         }
         response["report_path"] = result.get("final_report_path", "")
         response["run_id"] = result.get("run_id", 0)
+        response["agent_traces"] = result.get("agent_traces", [])
 
     return response
 
@@ -316,6 +399,47 @@ async def get_findings(run_id: int) -> dict:
     """
     findings = get_findings_for_run(run_id)
     return {"findings": findings, "count": len(findings)}
+
+
+@app.get("/api/audit/{audit_id}/report")
+async def download_report(audit_id: str) -> FileResponse:
+    """Download the generated Markdown audit report.
+
+    Args:
+        audit_id: The audit identifier.
+
+    Returns:
+        FileResponse with the Markdown report file.
+
+    Raises:
+        HTTPException: If audit or report not found.
+    """
+    if audit_id not in _active_audits:
+        raise HTTPException(status_code=404, detail="Audit not found")
+
+    audit = _active_audits[audit_id]
+
+    if audit["status"] != "completed":
+        raise HTTPException(status_code=400, detail="Audit not yet completed")
+
+    result = audit.get("result", {})
+    report_path_str = result.get("final_report_path", "")
+
+    if not report_path_str:
+        raise HTTPException(status_code=404, detail="No report was generated for this audit")
+
+    report_path = Path(report_path_str)
+    if not report_path.exists():
+        # Try relative to REPORTS_DIR
+        report_path = REPORTS_DIR / report_path.name
+        if not report_path.exists():
+            raise HTTPException(status_code=404, detail=f"Report file not found: {report_path_str}")
+
+    return FileResponse(
+        path=str(report_path),
+        filename=report_path.name,
+        media_type="text/markdown",
+    )
 
 
 @app.get("/api/health")
