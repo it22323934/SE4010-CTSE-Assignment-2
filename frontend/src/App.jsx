@@ -841,9 +841,13 @@ export default function CodeSentinelUI() {
 
       {/* Header */}
       <div style={{ borderBottom: `1px solid ${gh.border}`, background: gh.bgOverlay, padding: "10px 24px", display: "flex", alignItems: "center", gap: 10 }}>
-        <img src={logo} alt="CodeSentinel" style={{ height: 32, width: "auto" }} />
-        <span style={{ fontSize: 16, fontWeight: 600, color: gh.text }}>CodeSentinel</span>
-        <span style={{ fontSize: 11, color: gh.textMuted, fontFamily: "monospace", background: gh.bgSubtle, padding: "2px 6px", borderRadius: "2em", border: `1px solid ${gh.border}` }}>v1.0.0</span>
+        <div onClick={() => { if (pollRef.current) clearInterval(pollRef.current); if (timerRef.current) clearInterval(timerRef.current); setIsRunning(false); setIsComplete(false); setShowHistory(false); setErrorMsg(null); setReportMarkdown(null); }}
+          style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer", userSelect: "none" }}
+          title="Back to home">
+          <img src={logo} alt="CodeSentinel" style={{ height: 32, width: "auto" }} />
+          <span style={{ fontSize: 16, fontWeight: 600, color: gh.text }}>CodeSentinel</span>
+          <span style={{ fontSize: 11, color: gh.textMuted, fontFamily: "monospace", background: gh.bgSubtle, padding: "2px 6px", borderRadius: "2em", border: `1px solid ${gh.border}` }}>v1.0.0</span>
+        </div>
         <div style={{ flex: 1 }} />
         {auditHistory.length > 0 && (
           <button onClick={() => setShowHistory(!showHistory)}
