@@ -590,27 +590,15 @@ export default function CodeSentinelUI() {
   const pollRef = useRef(null);
   const timerRef = useRef(null);
 
-  // --- Restore state from localStorage on mount ---
+  // --- Restore only repo path from localStorage on mount (clean slate on refresh) ---
   useEffect(() => {
     const saved = loadCurrentAudit();
     if (saved) {
+      // Only restore the repo URL so the user doesn't have to re-type it
       setRepoPath(saved.repoPath || "");
-      setAuditId(saved.auditId || null);
-      setIsComplete(saved.isComplete || false);
-      setStepStatuses(saved.stepStatuses || {});
-      setStepDurations(saved.stepDurations || {});
-      setStepFindingsCounts(saved.stepFindingsCounts || {});
-      setStepToolCalls(saved.stepToolCalls || {});
-      setStepLogs(saved.stepLogs || {});
-      setFindings(saved.findings || { code_quality: [], security: [], refactoring: [] });
-      setActiveTab(saved.activeTab || "workflow");
-      setLastAuditRepo(saved.lastAuditRepo || null);
-      setElapsedTime(saved.elapsedTime || 0);
-      // If it was running when page closed, mark as stale — don't resume polling
-      if (saved.isRunning) {
-        setErrorMsg("Audit was interrupted by page refresh. Please run again.");
-      }
     }
+    // Clear stale audit state so refreshing never shows old results
+    clearCurrentAudit();
     setAuditHistory(loadAuditHistory());
   }, []);
 
@@ -655,6 +643,8 @@ export default function CodeSentinelUI() {
     setStepFindingsCounts(findingsCounts);
     setStepToolCalls(toolCallsMap);
     setStepLogs(logsMap);
+
+    return { statuses, durations, findingsCounts, toolCallsMap, logsMap };
   }, []);
 
   const runAudit = useCallback(async ({ forceReclone = false } = {}) => {
@@ -694,8 +684,9 @@ export default function CodeSentinelUI() {
           if (status.status === "completed") {
             clearInterval(pollRef.current);
             clearInterval(timerRef.current);
-            processStepsData(status.steps, null);
+            const { statuses, durations, findingsCounts, toolCallsMap, logsMap } = processStepsData(status.steps, null);
 
+            let finalLogs = { ...logsMap };
             if (status.agent_traces && status.agent_traces.length > 0) {
               const traceLogs = {};
               for (const trace of status.agent_traces) {
@@ -718,6 +709,10 @@ export default function CodeSentinelUI() {
                 }
                 return merged;
               });
+              // Merge trace logs into finalLogs for history
+              for (const [k, v] of Object.entries(traceLogs)) {
+                finalLogs[k] = v;
+              }
             }
 
             if (status.findings) {
@@ -745,7 +740,7 @@ export default function CodeSentinelUI() {
               stepDurations: { ...durations },
               stepFindingsCounts: { ...findingsCounts },
               stepToolCalls: { ...toolCallsMap },
-              stepLogs: { ...logsMap },
+              stepLogs: { ...finalLogs },
               findings: {
                 code_quality: status.findings?.code_quality || [],
                 security: status.findings?.security || [],
@@ -791,6 +786,8 @@ export default function CodeSentinelUI() {
     setSelectedStep(null);
     setActiveTab("workflow");
     setErrorMsg(null);
+    setReportMarkdown(null);
+    setReportLoading(false);
     setLastAuditRepo(entry.repoPath || null);
     setShowHistory(false);
   }, []);
@@ -1161,15 +1158,120 @@ export default function CodeSentinelUI() {
           </>
         )}
 
-        {/* Empty State */}
+        {/* Empty State — show history cards if available, otherwise show welcome */}
         {!isRunning && !isComplete && !errorMsg && !showHistory && (
-          <div style={{ textAlign: "center", padding: "60px 20px", color: gh.textMuted }}>
-            <div style={{ marginBottom: 16 }}>
-              <img src={logo} alt="CodeSentinel" style={{ height: 64, width: "auto", opacity: 0.6 }} />
+          auditHistory.length > 0 ? (
+            <div style={{ marginTop: 8 }}>
+              {/* Section header */}
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <Icons.Clock />
+                  <span style={{ fontSize: 16, fontWeight: 600, color: gh.text }}>Recent Scans</span>
+                  <span style={{ fontSize: 12, color: gh.textMuted, fontFamily: "monospace", background: gh.bgSubtle, padding: "2px 8px", borderRadius: "2em", border: `1px solid ${gh.border}` }}>
+                    {auditHistory.length}
+                  </span>
+                </div>
+                <button onClick={() => { if (window.confirm("Clear all scan history?")) { localStorage.removeItem(STORAGE_KEYS.AUDIT_HISTORY); setAuditHistory([]); } }}
+                  style={{ display: "flex", alignItems: "center", gap: 5, padding: "4px 10px", fontSize: 11, fontWeight: 500, color: gh.textMuted, background: "transparent", border: `1px solid ${gh.border}`, borderRadius: 6, cursor: "pointer", transition: "all 0.15s" }}
+                  onMouseEnter={e => { e.currentTarget.style.color = gh.red; e.currentTarget.style.borderColor = gh.red + "60"; }}
+                  onMouseLeave={e => { e.currentTarget.style.color = gh.textMuted; e.currentTarget.style.borderColor = gh.border; }}>
+                  <Icons.X /> Clear
+                </button>
+              </div>
+
+              {/* History cards grid */}
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))", gap: 14 }}>
+                {auditHistory.map((entry) => {
+                  const date = new Date(entry.completedAt);
+                  const rawPath = entry.repoPath || "";
+                  const repoShort = rawPath.replace(/^https?:\/\/github\.com\//, "").replace(/\.git$/, "");
+                  const repoName = repoShort.split(/[/\\]/).pop() || repoShort;
+                  const severityScore = (entry.criticalCount || 0) * 4 + (entry.highCount || 0) * 2 + ((entry.totalFindings || 0) - (entry.criticalCount || 0) - (entry.highCount || 0));
+                  const healthColor = severityScore === 0 ? gh.green : severityScore <= 5 ? gh.yellow : severityScore <= 15 ? gh.orange : gh.red;
+                  const healthLabel = severityScore === 0 ? "Healthy" : severityScore <= 5 ? "Low Risk" : severityScore <= 15 ? "Moderate" : "High Risk";
+
+                  return (
+                    <div key={entry.auditId}
+                      onClick={() => { loadFromHistory(entry); setRepoPath(entry.repoPath || ""); }}
+                      style={{
+                        background: gh.bgOverlay,
+                        border: `1px solid ${gh.border}`,
+                        borderRadius: 10, padding: "16px 18px", cursor: "pointer",
+                        transition: "border-color 0.15s, transform 0.15s, box-shadow 0.15s",
+                        position: "relative",
+                      }}
+                      onMouseEnter={e => { e.currentTarget.style.borderColor = gh.blue + "70"; e.currentTarget.style.transform = "translateY(-2px)"; e.currentTarget.style.boxShadow = `0 4px 12px ${gh.blue}15`; }}
+                      onMouseLeave={e => { e.currentTarget.style.borderColor = gh.border; e.currentTarget.style.transform = "none"; e.currentTarget.style.boxShadow = "none"; }}>
+
+                      {/* Health indicator bar */}
+                      <div style={{ position: "absolute", top: 0, left: 18, right: 18, height: 3, borderRadius: "0 0 3px 3px", background: healthColor, opacity: 0.7 }} />
+
+                      {/* Repo name */}
+                      <div style={{ fontSize: 15, fontWeight: 600, color: gh.text, marginBottom: 4, marginTop: 4, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        {repoName}
+                      </div>
+
+                      {/* Full path */}
+                      <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 12 }}>
+                        <span style={{ color: gh.blue, display: "flex", alignItems: "center", flexShrink: 0 }}><Icons.Repo /></span>
+                        <span style={{ fontSize: 11, color: gh.textMuted, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontFamily: "'SF Mono', monospace", flex: 1 }}>
+                          {repoShort || rawPath}
+                        </span>
+                      </div>
+
+                      {/* Stats badges */}
+                      <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", marginBottom: 12 }}>
+                        <span style={{ fontSize: 11, fontFamily: "monospace", color: gh.blue, background: gh.blueBg, padding: "2px 8px", borderRadius: 4, border: `1px solid ${gh.blue}25` }}>
+                          {entry.totalFindings} finding{entry.totalFindings !== 1 ? "s" : ""}
+                        </span>
+                        {entry.criticalCount > 0 && (
+                          <span style={{ fontSize: 11, fontFamily: "monospace", color: gh.red, background: gh.redBg, padding: "2px 8px", borderRadius: 4, border: `1px solid ${gh.red}25` }}>
+                            {entry.criticalCount} critical
+                          </span>
+                        )}
+                        {entry.highCount > 0 && (
+                          <span style={{ fontSize: 11, fontFamily: "monospace", color: gh.orange, background: gh.yellowBg, padding: "2px 8px", borderRadius: 4, border: `1px solid ${gh.orange}25` }}>
+                            {entry.highCount} high
+                          </span>
+                        )}
+                        {entry.refactoringCount > 0 && (
+                          <span style={{ fontSize: 11, fontFamily: "monospace", color: gh.green, background: `${gh.green}15`, padding: "2px 8px", borderRadius: 4, border: `1px solid ${gh.green}25` }}>
+                            {entry.refactoringCount} refactor{entry.refactoringCount !== 1 ? "s" : ""}
+                          </span>
+                        )}
+                      </div>
+
+                      {/* Footer: health label + timestamp */}
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                        <span style={{ fontSize: 11, fontWeight: 600, color: healthColor }}>{healthLabel}</span>
+                        <span style={{ fontSize: 10, color: gh.textSubtle, display: "flex", alignItems: "center", gap: 4 }}>
+                          <Icons.Clock /> {date.toLocaleDateString()} {date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                        </span>
+                      </div>
+
+                      {/* Delete button */}
+                      <button
+                        onClick={(e) => { e.stopPropagation(); removeFromHistory(entry.auditId); setAuditHistory(prev => prev.filter(h => h.auditId !== entry.auditId)); }}
+                        style={{ position: "absolute", top: 10, right: 10, background: "none", border: "none", color: gh.textSubtle, cursor: "pointer", padding: 4, borderRadius: 4, display: "flex", alignItems: "center", opacity: 0.5, transition: "opacity 0.15s, color 0.15s" }}
+                        onMouseEnter={e => { e.currentTarget.style.opacity = "1"; e.currentTarget.style.color = gh.red; }}
+                        onMouseLeave={e => { e.currentTarget.style.opacity = "0.5"; e.currentTarget.style.color = gh.textSubtle; }}
+                        title="Remove from history">
+                        <Icons.X />
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
             </div>
-            <div style={{ fontSize: 20, fontWeight: 600, color: gh.text, marginBottom: 8 }}>No audit results yet</div>
-            <div style={{ fontSize: 14, maxWidth: 400, margin: "0 auto" }}>Enter a repository path and click <strong style={{ color: gh.green }}>Run Audit</strong> to start a multi-agent code analysis.</div>
-          </div>
+          ) : (
+            <div style={{ textAlign: "center", padding: "60px 20px", color: gh.textMuted }}>
+              <div style={{ marginBottom: 16 }}>
+                <img src={logo} alt="CodeSentinel" style={{ height: 64, width: "auto", opacity: 0.6 }} />
+              </div>
+              <div style={{ fontSize: 20, fontWeight: 600, color: gh.text, marginBottom: 8 }}>No audit results yet</div>
+              <div style={{ fontSize: 14, maxWidth: 400, margin: "0 auto" }}>Enter a repository path and click <strong style={{ color: gh.green }}>Run Audit</strong> to start a multi-agent code analysis.</div>
+            </div>
+          )
         )}
 
         </>}
