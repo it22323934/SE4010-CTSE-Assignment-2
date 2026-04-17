@@ -78,4 +78,31 @@ CREATE INDEX IF NOT EXISTS idx_findings_category ON findings(category);
 CREATE INDEX IF NOT EXISTS idx_findings_file ON findings(file_path);
 CREATE INDEX IF NOT EXISTS idx_findings_uid ON findings(finding_uid);
 CREATE INDEX IF NOT EXISTS idx_metrics_run ON file_metrics(run_id);
+
+-- ============================================================
+-- Vulnerability Knowledge Base (queried via MCP at runtime)
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS vulnerability_patterns (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    category        TEXT NOT NULL,
+    subcategory     TEXT,
+    cwe_id          TEXT NOT NULL,
+    owasp_id        TEXT,
+    severity        TEXT NOT NULL CHECK (severity IN ('critical', 'high', 'medium', 'low')),
+    pattern         TEXT NOT NULL,
+    description     TEXT NOT NULL,
+    attack_vector   TEXT,
+    remediation     TEXT,
+    languages       TEXT DEFAULT 'python',
+    enabled         INTEGER DEFAULT 1,
+    source          TEXT DEFAULT 'cwe_top25',
+    date_added      DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_vuln_category ON vulnerability_patterns(category);
+CREATE INDEX IF NOT EXISTS idx_vuln_cwe ON vulnerability_patterns(cwe_id);
+CREATE INDEX IF NOT EXISTS idx_vuln_severity ON vulnerability_patterns(severity);
+CREATE INDEX IF NOT EXISTS idx_vuln_enabled ON vulnerability_patterns(enabled);
+CREATE INDEX IF NOT EXISTS idx_vuln_language ON vulnerability_patterns(languages);
 CREATE INDEX IF NOT EXISTS idx_runs_repo ON audit_runs(repo_path);

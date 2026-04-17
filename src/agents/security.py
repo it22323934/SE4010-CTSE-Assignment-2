@@ -1,8 +1,11 @@
 """Security Vulnerability analysis agent for CodeSentinel.
 
 Scans source files for security vulnerabilities using pattern matching
-and Git history analysis. Uses llama3:8b for pattern reasoning,
-classifying severity, and explaining attack vectors.
+and Git history analysis. Queries the CWE/OWASP vulnerability knowledge
+base via the SQLite MCP server for detection patterns at runtime.
+
+Uses llama3:8b for pattern reasoning, classifying severity, and
+explaining attack vectors.
 """
 
 import json
@@ -13,6 +16,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_ollama import ChatOllama
 
 from src.config import LLM_SETTINGS, MODELS, OLLAMA_BASE_URL
+from src.mcp.sqlite_client import sqlite_query
 from src.observability.tracer import get_tracer
 from src.state import AuditState
 from src.tools.git_analyzer import git_analyzer
@@ -67,8 +71,9 @@ SECRET_PATTERNS = [
 def security_node(state: AuditState) -> dict:
     """Security agent — scan priority files for vulnerabilities.
 
-    Runs pattern scanner on each file, checks Git history for
-    leaked secrets, then optionally uses LLM to classify and
+    Queries the CWE/OWASP vulnerability knowledge base via the SQLite
+    MCP server, runs pattern scanner on each file, checks Git history
+    for leaked secrets, then optionally uses LLM to classify and
     explain attack vectors.
 
     Args:
@@ -87,7 +92,10 @@ def security_node(state: AuditState) -> dict:
 
         all_findings: list[dict] = []
 
-        # Step 1: Scan each file with pattern_scanner
+        # Step 0: Query the vulnerability knowledge base via MCP
+        kb_summary = _query_knowledge_base(tracer)
+
+        # Step 1: Scan each file with pattern_scanner (loads patterns from DB)
         for file_rel in priority_files:
             file_path = str(Path(repo_path) / file_rel)
 
@@ -108,6 +116,8 @@ def security_node(state: AuditState) -> dict:
                 continue
 
             matches = scan_result.get("data", {}).get("matches", [])
+            pattern_source = scan_result.get("data", {}).get("pattern_source", "unknown")
+
             for match in matches:
                 finding = {
                     "id": f"SEC-{uuid.uuid4().hex[:6]}",
@@ -118,10 +128,14 @@ def security_node(state: AuditState) -> dict:
                     "agent_source": "security",
                     "severity": match.get("severity", "medium"),
                     "cwe_id": match.get("cwe_id"),
+                    "owasp_id": match.get("owasp_id"),
                     "description": match.get("description", ""),
-                    "suggestion": None,
+                    "attack_vector": match.get("attack_vector"),
+                    "remediation": match.get("remediation"),
+                    "suggestion": match.get("remediation"),
                     "confidence": 0.90,
                     "is_new": None,
+                    "pattern_source": pattern_source,
                 }
                 all_findings.append(finding)
 
@@ -174,15 +188,25 @@ def security_node(state: AuditState) -> dict:
                         "file": f.get("file"),
                         "category": f.get("category"),
                         "severity": f.get("severity"),
+                        "cwe_id": f.get("cwe_id"),
+                        "owasp_id": f.get("owasp_id"),
                         "description": f.get("description"),
+                        "attack_vector": f.get("attack_vector"),
                     }
                     for f in all_findings[:10]
                 ], indent=2)
 
+                kb_context = ""
+                if kb_summary:
+                    kb_context = f"\n\nKnowledge base loaded: {kb_summary}"
+
                 messages = [
                     SystemMessage(content=SYSTEM_PROMPT),
                     HumanMessage(
-                        content=f"Classify these security findings and provide attack vectors. Return JSON array:\n{findings_summary}"
+                        content=(
+                            f"Classify these security findings and provide attack vectors. "
+                            f"Return JSON array:{kb_context}\n{findings_summary}"
+                        )
                     ),
                 ]
 
@@ -211,3 +235,62 @@ def security_node(state: AuditState) -> dict:
             "agent_traces": [trace],
             "errors": [{"agent": "security", "error": str(e)}],
         }
+
+
+def _query_knowledge_base(tracer) -> str | None:
+    """Query the vulnerability knowledge base via MCP sqlite_query.
+
+    Fetches a summary of pattern categories and counts from the
+    vulnerability_patterns table using the SQLite MCP tool.
+
+    Args:
+        tracer: The execution tracer for logging.
+
+    Returns:
+        Human-readable summary string, or None if DB is empty/unavailable.
+    """
+    try:
+        kb_result_raw = sqlite_query.invoke({
+            "query": (
+                "SELECT category, COUNT(*) as cnt, "
+                "GROUP_CONCAT(DISTINCT cwe_id) as cwe_ids, "
+                "GROUP_CONCAT(DISTINCT severity) as severities "
+                "FROM vulnerability_patterns WHERE enabled = 1 "
+                "GROUP BY category ORDER BY cnt DESC"
+            ),
+        })
+        kb_result = json.loads(kb_result_raw)
+        tracer.log_tool_call(
+            "security",
+            "sqlite_query (MCP)",
+            {"query": "SELECT category, COUNT(*) ... FROM vulnerability_patterns"},
+            f"Knowledge base query: {kb_result.get('status', 'unknown')}",
+        )
+
+        if kb_result.get("status") != "success":
+            return None
+
+        rows = kb_result.get("data", [])
+        if not rows:
+            return None
+
+        total_patterns = sum(r.get("cnt", 0) for r in rows)
+        categories = [r.get("category", "?") for r in rows]
+        unique_cwes: set[str] = set()
+        for r in rows:
+            for cwe in (r.get("cwe_ids") or "").split(","):
+                cwe = cwe.strip()
+                if cwe:
+                    unique_cwes.add(cwe)
+
+        summary = (
+            f"{total_patterns} patterns across {len(categories)} categories "
+            f"({', '.join(categories[:8])}{'...' if len(categories) > 8 else ''}), "
+            f"covering {len(unique_cwes)} unique CWE IDs"
+        )
+
+        return summary
+
+    except Exception as e:
+        tracer.log_error("security", f"Knowledge base MCP query failed (non-critical): {e}")
+        return None

@@ -321,3 +321,92 @@ def insert_file_metrics(run_id: int, metrics: dict) -> None:
     )
     conn.commit()
     conn.close()
+
+
+# ============================================================
+# Vulnerability Pattern Knowledge Base Queries
+# ============================================================
+
+
+def get_vulnerability_patterns(
+    category: str | None = None,
+    language: str = "python",
+    severity: str | None = None,
+    enabled_only: bool = True,
+) -> list[dict]:
+    """Fetch vulnerability patterns from the knowledge base.
+
+    Used by pattern_scanner to dynamically load detection rules
+    from the SQLite MCP database at runtime.
+
+    Args:
+        category: Optional category filter (e.g., "sql_injection").
+        language: Language to filter by (default: "python").
+        severity: Optional severity filter ("critical", "high", "medium", "low").
+        enabled_only: If True, only return enabled patterns.
+
+    Returns:
+        List of pattern dicts with regex, CWE, OWASP, and remediation info.
+    """
+    conn = get_connection()
+
+    query = "SELECT * FROM vulnerability_patterns WHERE 1=1"
+    params: list[str] = []
+
+    if enabled_only:
+        query += " AND enabled = 1"
+
+    if category:
+        query += " AND category = ?"
+        params.append(category)
+
+    if severity:
+        query += " AND severity = ?"
+        params.append(severity)
+
+    if language:
+        query += " AND languages LIKE ?"
+        params.append(f"%{language}%")
+
+    query += " ORDER BY severity DESC, category"
+
+    rows = conn.execute(query, params).fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
+
+def get_pattern_categories() -> list[dict]:
+    """Get a summary of all vulnerability categories in the knowledge base.
+
+    Returns:
+        List of dicts with category name, count, and severity breakdown.
+    """
+    conn = get_connection()
+    rows = conn.execute(
+        """SELECT category, COUNT(*) as pattern_count,
+                  SUM(CASE WHEN severity = 'critical' THEN 1 ELSE 0 END) as critical_count,
+                  SUM(CASE WHEN severity = 'high' THEN 1 ELSE 0 END) as high_count,
+                  SUM(CASE WHEN severity = 'medium' THEN 1 ELSE 0 END) as medium_count,
+                  GROUP_CONCAT(DISTINCT cwe_id) as cwe_ids,
+                  GROUP_CONCAT(DISTINCT owasp_id) as owasp_ids
+           FROM vulnerability_patterns
+           WHERE enabled = 1
+           GROUP BY category
+           ORDER BY critical_count DESC, high_count DESC""",
+    ).fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
+
+def get_pattern_count() -> int:
+    """Get total number of enabled vulnerability patterns.
+
+    Returns:
+        Count of enabled patterns in the database.
+    """
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT COUNT(*) as cnt FROM vulnerability_patterns WHERE enabled = 1"
+    ).fetchone()
+    conn.close()
+    return row["cnt"] if row else 0
