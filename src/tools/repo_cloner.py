@@ -6,8 +6,10 @@ public Git URL. Reuses existing clones to avoid redundant downloads.
 """
 
 import json
+import os
 import re
 import shutil
+import stat
 import subprocess
 from pathlib import Path
 
@@ -114,7 +116,11 @@ def clone_repository(repo_url: str, branch: str | None = None, force_reclone: bo
 
         # Force reclone: remove existing directory
         if force_reclone and clone_path.exists():
-            shutil.rmtree(clone_path)
+            def _on_rm_error(_func: object, path: str, _exc: object) -> None:
+                """Handle read-only files (e.g. .git/objects/pack on Windows)."""
+                os.chmod(path, stat.S_IWRITE)
+                os.unlink(path)
+            shutil.rmtree(clone_path, onerror=_on_rm_error)
 
         if clone_path.exists() and (clone_path / ".git").exists():
             # Repository already cloned — pull latest changes

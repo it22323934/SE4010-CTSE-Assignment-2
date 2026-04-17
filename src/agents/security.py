@@ -21,6 +21,7 @@ from src.observability.tracer import get_tracer
 from src.state import AuditState
 from src.tools.git_analyzer import git_analyzer
 from src.tools.pattern_scanner import pattern_scanner
+from src.tools.dependency_scanner import dependency_scanner
 
 SYSTEM_PROMPT = """You are the Security Vulnerability Analyst in CodeSentinel, an automated multi-agent code audit system.
 
@@ -201,7 +202,60 @@ def security_node(state: AuditState) -> dict:
             except Exception:
                 pass  # Non-critical — continue scanning
 
-        # Step 3: Optionally enhance with LLM for classification
+        # Step 3: Scan dependencies for known vulnerabilities (OSV.dev)
+        try:
+            dep_result_raw = dependency_scanner.invoke({
+                "repo_path": repo_path,
+                "max_details": 20,
+            })
+            dep_result = json.loads(dep_result_raw)
+            tracer.log_tool_call(
+                "security",
+                "dependency_scanner",
+                {"repo_path": repo_path},
+                f"Dependency scan: {dep_result.get('data', {}).get('vulnerable_count', 0)} vulnerable packages",
+            )
+
+            if dep_result.get("status") == "success":
+                dep_data = dep_result.get("data", {})
+                for vuln in dep_data.get("vulnerabilities", []):
+                    aliases = vuln.get("aliases", [])
+                    cve_id = next((a for a in aliases if a.startswith("CVE-")), None)
+                    ghsa_id = vuln.get("vuln_id", "") if vuln.get("vuln_id", "").startswith("GHSA-") else None
+
+                    severity = vuln.get("severity", "medium")
+                    fix_info = f" Upgrade to {vuln['fix_version']}." if vuln.get("fix_version") else ""
+                    refs = vuln.get("references", [])
+                    ref_str = f" Ref: {refs[0]}" if refs else ""
+
+                    all_findings.append({
+                        "id": f"SEC-{uuid.uuid4().hex[:6]}",
+                        "file": vuln.get("lock_file", "dependencies"),
+                        "line_start": 0,
+                        "line_end": 0,
+                        "category": "vulnerable_dependency",
+                        "agent_source": "security",
+                        "severity": severity,
+                        "cwe_id": cve_id or "CWE-1035",
+                        "owasp_id": "A06:2021",
+                        "description": (
+                            f"{vuln.get('package', '?')}@{vuln.get('installed_version', '?')} — "
+                            f"{vuln.get('summary', vuln.get('vuln_id', 'Known vulnerability'))}"
+                        ),
+                        "attack_vector": (
+                            f"Vulnerable dependency {vuln.get('package')}@{vuln.get('installed_version')} "
+                            f"has known vulnerability {vuln.get('vuln_id')}.{fix_info}{ref_str}"
+                        ),
+                        "suggestion": f"Upgrade {vuln.get('package')} to {vuln.get('fix_version', 'latest')}." if vuln.get("fix_version") else f"Review {vuln.get('vuln_id')} and update {vuln.get('package')} to a patched version.",
+                        "confidence": 0.95,
+                        "is_new": None,
+                        "vuln_id": vuln.get("vuln_id"),
+                        "ghsa_id": ghsa_id,
+                    })
+        except Exception as dep_err:
+            tracer.log_error("security", f"Dependency scan failed (non-critical): {dep_err}")
+
+        # Step 4: Optionally enhance with LLM for classification
         if all_findings:
             try:
                 model = ChatOllama(

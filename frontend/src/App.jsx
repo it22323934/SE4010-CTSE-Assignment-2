@@ -851,7 +851,7 @@ export default function CodeSentinelUI() {
         {auditHistory.length > 0 && (
           <button onClick={() => setShowHistory(!showHistory)}
             style={{ display: "flex", alignItems: "center", gap: 5, padding: "4px 10px", fontSize: 12, fontWeight: 500, color: showHistory ? gh.blue : gh.textMuted, background: showHistory ? gh.blueBg : "transparent", border: `1px solid ${showHistory ? gh.blue + "40" : gh.border}`, borderRadius: 6, cursor: "pointer", transition: "all 0.15s" }}>
-            <Icons.Clock /> {auditHistory.length} Past Run{auditHistory.length !== 1 ? "s" : ""}
+            {showHistory ? <><Icons.Chevron open={false} /> Back to Audit</> : <><Icons.Clock /> {auditHistory.length} Past Scan{auditHistory.length !== 1 ? "s" : ""}</>}
           </button>
         )}
         {isComplete && (
@@ -881,82 +881,121 @@ export default function CodeSentinelUI() {
           </div>
         )}
 
-        {/* Past Runs — Project Cards */}
-        {auditHistory.length > 0 && !isRunning && (
+        {/* ====== Past Projects Page ====== */}
+        {showHistory && !isRunning && (
           <div style={{ marginBottom: 20 }}>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
-              <span style={{ fontSize: 13, fontWeight: 600, color: gh.textMuted, display: "flex", alignItems: "center", gap: 6 }}>
-                <Icons.Clock /> Recent Scans
-              </span>
-              {auditHistory.length > 4 && (
-                <button onClick={() => setShowHistory(!showHistory)}
-                  style={{ background: "none", border: "none", color: gh.blue, cursor: "pointer", fontSize: 12 }}>
-                  {showHistory ? "Show less" : `Show all (${auditHistory.length})`}
+            {/* Page Header */}
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <span style={{ fontSize: 20, fontWeight: 700, color: gh.text }}>Past Projects</span>
+                <span style={{ fontSize: 12, color: gh.textMuted, fontFamily: "monospace", background: gh.bgSubtle, padding: "2px 8px", borderRadius: "2em", border: `1px solid ${gh.border}` }}>
+                  {auditHistory.length} scan{auditHistory.length !== 1 ? "s" : ""}
+                </span>
+              </div>
+              {auditHistory.length > 0 && (
+                <button onClick={() => { if (window.confirm("Clear all scan history?")) { localStorage.removeItem(STORAGE_KEYS.AUDIT_HISTORY); setAuditHistory([]); } }}
+                  style={{ display: "flex", alignItems: "center", gap: 5, padding: "5px 12px", fontSize: 12, fontWeight: 500, color: gh.red, background: "transparent", border: `1px solid ${gh.red}30`, borderRadius: 6, cursor: "pointer", transition: "all 0.15s" }}
+                  onMouseEnter={e => { e.currentTarget.style.background = gh.redBg; e.currentTarget.style.borderColor = gh.red; }}
+                  onMouseLeave={e => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.borderColor = gh.red + "30"; }}>
+                  <Icons.X /> Clear All
                 </button>
               )}
             </div>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: 10 }}>
-              {(showHistory ? auditHistory : auditHistory.slice(0, 4)).map((entry) => {
-                const date = new Date(entry.completedAt);
-                const repoShort = (entry.repoPath || "").replace(/^https?:\/\/github\.com\//, "").replace(/\.git$/, "");
-                const isActive = entry.auditId === auditId && isComplete;
-                return (
-                  <div key={entry.auditId}
-                    onClick={() => { loadFromHistory(entry); setRepoPath(entry.repoPath || ""); }}
-                    style={{
-                      background: isActive ? `${gh.blue}10` : gh.bgOverlay,
-                      border: `1px solid ${isActive ? gh.blue + "50" : gh.border}`,
-                      borderRadius: 8, padding: "12px 14px", cursor: "pointer",
-                      transition: "border-color 0.15s, transform 0.1s",
-                      position: "relative",
-                    }}
-                    onMouseEnter={e => { e.currentTarget.style.borderColor = gh.blue; e.currentTarget.style.transform = "translateY(-1px)"; }}
-                    onMouseLeave={e => { e.currentTarget.style.borderColor = isActive ? gh.blue + "50" : gh.border; e.currentTarget.style.transform = "none"; }}>
-                    {/* Delete button */}
-                    <button onClick={(e) => { e.stopPropagation(); deleteFromHistory(entry.auditId); }}
-                      style={{ position: "absolute", top: 6, right: 6, background: "none", border: "none", color: gh.textSubtle, cursor: "pointer", padding: 2, borderRadius: 4, display: "flex", alignItems: "center" }}
-                      onMouseEnter={e => e.currentTarget.style.color = gh.red}
-                      onMouseLeave={e => e.currentTarget.style.color = gh.textSubtle}>
-                      <Icons.X />
-                    </button>
-                    {/* Repo name */}
-                    <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
-                      <span style={{ color: gh.blue, display: "flex", alignItems: "center", flexShrink: 0 }}><Icons.Repo /></span>
-                      <span style={{ fontSize: 12, fontWeight: 600, color: gh.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontFamily: "'SF Mono', monospace", flex: 1, paddingRight: 16 }}>
-                        {repoShort || entry.repoPath}
-                      </span>
-                    </div>
-                    {/* Stats row */}
-                    <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", marginBottom: 6 }}>
-                      <span style={{ fontSize: 10, fontFamily: "monospace", color: gh.blue, background: gh.blueBg, padding: "1px 5px", borderRadius: 3, border: `1px solid ${gh.blue}25` }}>
-                        {entry.totalFindings} findings
-                      </span>
-                      {entry.criticalCount > 0 && (
-                        <span style={{ fontSize: 10, fontFamily: "monospace", color: gh.red, background: gh.redBg, padding: "1px 5px", borderRadius: 3, border: `1px solid ${gh.red}25` }}>
-                          {entry.criticalCount} critical
+
+            {auditHistory.length === 0 ? (
+              <div style={{ textAlign: "center", padding: "60px 20px", color: gh.textMuted }}>
+                <div style={{ marginBottom: 12 }}><Icons.Clock /></div>
+                <div style={{ fontSize: 16, fontWeight: 600, color: gh.text, marginBottom: 6 }}>No past scans</div>
+                <div style={{ fontSize: 13 }}>Completed audits will appear here.</div>
+              </div>
+            ) : (
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))", gap: 14 }}>
+                {auditHistory.map((entry) => {
+                  const date = new Date(entry.completedAt);
+                  const rawPath = entry.repoPath || "";
+                  const repoShort = rawPath.replace(/^https?:\/\/github\.com\//, "").replace(/\.git$/, "");
+                  const repoName = repoShort.split(/[/\\]/).pop() || repoShort;
+                  const isActive = entry.auditId === auditId && isComplete;
+                  const severityScore = (entry.criticalCount || 0) * 4 + (entry.highCount || 0) * 2 + ((entry.totalFindings || 0) - (entry.criticalCount || 0) - (entry.highCount || 0));
+                  const healthColor = severityScore === 0 ? gh.green : severityScore <= 5 ? gh.yellow : severityScore <= 15 ? gh.orange : gh.red;
+                  const healthLabel = severityScore === 0 ? "Healthy" : severityScore <= 5 ? "Low Risk" : severityScore <= 15 ? "Moderate" : "High Risk";
+
+                  return (
+                    <div key={entry.auditId}
+                      onClick={() => { loadFromHistory(entry); setRepoPath(entry.repoPath || ""); setShowHistory(false); }}
+                      style={{
+                        background: isActive ? `${gh.blue}08` : gh.bgOverlay,
+                        border: `1px solid ${isActive ? gh.blue + "50" : gh.border}`,
+                        borderRadius: 10, padding: "16px 18px", cursor: "pointer",
+                        transition: "border-color 0.15s, transform 0.15s, box-shadow 0.15s",
+                        position: "relative",
+                      }}
+                      onMouseEnter={e => { e.currentTarget.style.borderColor = gh.blue; e.currentTarget.style.transform = "translateY(-2px)"; e.currentTarget.style.boxShadow = `0 4px 12px ${gh.blue}15`; }}
+                      onMouseLeave={e => { e.currentTarget.style.borderColor = isActive ? gh.blue + "50" : gh.border; e.currentTarget.style.transform = "none"; e.currentTarget.style.boxShadow = "none"; }}>
+
+                      {/* Delete button */}
+                      <button onClick={(e) => { e.stopPropagation(); deleteFromHistory(entry.auditId); }}
+                        style={{ position: "absolute", top: 10, right: 10, background: "none", border: "none", color: gh.textSubtle, cursor: "pointer", padding: 4, borderRadius: 4, display: "flex", alignItems: "center" }}
+                        onMouseEnter={e => e.currentTarget.style.color = gh.red}
+                        onMouseLeave={e => e.currentTarget.style.color = gh.textSubtle}>
+                        <Icons.X />
+                      </button>
+
+                      {/* Top row: health dot + repo name */}
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+                        <span style={{ width: 10, height: 10, borderRadius: "50%", background: healthColor, flexShrink: 0, boxShadow: `0 0 6px ${healthColor}60` }} />
+                        <span style={{ fontSize: 14, fontWeight: 700, color: gh.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1, paddingRight: 20 }}>
+                          {repoName}
                         </span>
-                      )}
-                      {entry.highCount > 0 && (
-                        <span style={{ fontSize: 10, fontFamily: "monospace", color: gh.orange, background: gh.yellowBg, padding: "1px 5px", borderRadius: 3, border: `1px solid ${gh.orange}25` }}>
-                          {entry.highCount} high
+                      </div>
+
+                      {/* Full path */}
+                      <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 12 }}>
+                        <span style={{ color: gh.blue, display: "flex", alignItems: "center", flexShrink: 0 }}><Icons.Repo /></span>
+                        <span style={{ fontSize: 11, color: gh.textMuted, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontFamily: "'SF Mono', monospace", flex: 1 }}>
+                          {repoShort || rawPath}
                         </span>
-                      )}
-                      {entry.refactoringCount > 0 && (
-                        <span style={{ fontSize: 10, fontFamily: "monospace", color: gh.green, background: `${gh.green}15`, padding: "1px 5px", borderRadius: 3, border: `1px solid ${gh.green}25` }}>
-                          {entry.refactoringCount} refactors
+                      </div>
+
+                      {/* Stats badges */}
+                      <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", marginBottom: 12 }}>
+                        <span style={{ fontSize: 11, fontFamily: "monospace", color: gh.blue, background: gh.blueBg, padding: "2px 8px", borderRadius: 4, border: `1px solid ${gh.blue}25` }}>
+                          {entry.totalFindings} finding{entry.totalFindings !== 1 ? "s" : ""}
                         </span>
-                      )}
+                        {entry.criticalCount > 0 && (
+                          <span style={{ fontSize: 11, fontFamily: "monospace", color: gh.red, background: gh.redBg, padding: "2px 8px", borderRadius: 4, border: `1px solid ${gh.red}25` }}>
+                            {entry.criticalCount} critical
+                          </span>
+                        )}
+                        {entry.highCount > 0 && (
+                          <span style={{ fontSize: 11, fontFamily: "monospace", color: gh.orange, background: gh.yellowBg, padding: "2px 8px", borderRadius: 4, border: `1px solid ${gh.orange}25` }}>
+                            {entry.highCount} high
+                          </span>
+                        )}
+                        {entry.refactoringCount > 0 && (
+                          <span style={{ fontSize: 11, fontFamily: "monospace", color: gh.green, background: `${gh.green}15`, padding: "2px 8px", borderRadius: 4, border: `1px solid ${gh.green}25` }}>
+                            {entry.refactoringCount} refactor{entry.refactoringCount !== 1 ? "s" : ""}
+                          </span>
+                        )}
+                      </div>
+
+                      {/* Footer: health label + timestamp */}
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                        <span style={{ fontSize: 11, fontWeight: 600, color: healthColor }}>{healthLabel}</span>
+                        <span style={{ fontSize: 10, color: gh.textSubtle, display: "flex", alignItems: "center", gap: 4 }}>
+                          <Icons.Clock /> {date.toLocaleDateString()} {date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                        </span>
+                      </div>
                     </div>
-                    {/* Timestamp */}
-                    <div style={{ fontSize: 10, color: gh.textSubtle, display: "flex", alignItems: "center", gap: 4 }}>
-                      <Icons.Clock /> {date.toLocaleDateString()} {date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
         )}
+
+        {/* ====== Audit View (hidden when Past Projects page is open) ====== */}
+        {(!showHistory || isRunning) && <>
 
         {/* Input Section */}
         <div style={{ background: gh.bgOverlay, border: `1px solid ${gh.border}`, borderRadius: 6, padding: 20, marginBottom: 20 }}>
@@ -1123,7 +1162,7 @@ export default function CodeSentinelUI() {
         )}
 
         {/* Empty State */}
-        {!isRunning && !isComplete && !errorMsg && (
+        {!isRunning && !isComplete && !errorMsg && !showHistory && (
           <div style={{ textAlign: "center", padding: "60px 20px", color: gh.textMuted }}>
             <div style={{ marginBottom: 16 }}>
               <img src={logo} alt="CodeSentinel" style={{ height: 64, width: "auto", opacity: 0.6 }} />
@@ -1132,6 +1171,8 @@ export default function CodeSentinelUI() {
             <div style={{ fontSize: 14, maxWidth: 400, margin: "0 auto" }}>Enter a repository path and click <strong style={{ color: gh.green }}>Run Audit</strong> to start a multi-agent code analysis.</div>
           </div>
         )}
+
+        </>}
       </div>
     </div>
   );
